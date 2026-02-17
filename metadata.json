@@ -1,0 +1,7 @@
+{
+  "name": "Lens Master - Secure Optical Marketplace",
+  "description": "A production-grade optical store platform featuring secure prescription handling, lens customization, and AI-powered vision assistance.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
