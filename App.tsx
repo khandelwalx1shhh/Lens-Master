@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { 
   HashRouter as Router, 
   Routes, 
@@ -36,15 +36,18 @@ import { MOCK_PRODUCTS, LENS_PRICING } from './constants';
 import { analyzePrescriptionImage, getLensRecommendation } from './services/geminiService';
 import { mailService } from './services/mailService';
 
+// Simple in-memory cache for AI recommendations to prevent repeated slow API calls
+const recommendationCache: Record<string, string> = {};
+
 // --- TOAST SYSTEM ---
 const Toast: React.FC<{ message: string, type: 'success' | 'info', onClose: () => void }> = ({ message, type, onClose }) => {
   useEffect(() => {
-    const timer = setTimeout(onClose, 5000);
+    const timer = setTimeout(onClose, 4000);
     return () => clearTimeout(timer);
   }, [onClose]);
 
   return (
-    <div className={`fixed bottom-6 right-6 z-[200] flex items-center gap-3 p-4 rounded-2xl shadow-2xl border animate-bounce-in glass ${type === 'success' ? 'border-green-100 bg-green-50/90 text-green-800' : 'border-blue-100 bg-blue-50/90 text-blue-800'}`}>
+    <div className={`fixed bottom-6 right-6 z-[200] flex items-center gap-3 p-4 rounded-2xl shadow-2xl border animate-fade-in glass ${type === 'success' ? 'border-green-100 bg-green-50/90 text-green-800' : 'border-blue-100 bg-blue-50/90 text-blue-800'}`}>
       {type === 'success' ? <CheckCircle className="w-5 h-5" /> : <Mail className="w-5 h-5" />}
       <div className="text-sm font-semibold">{message}</div>
       <button onClick={onClose} className="p-1 hover:bg-white/50 rounded-full"><X className="w-4 h-4" /></button>
@@ -74,12 +77,14 @@ const useAuth = (addToast: (msg: string, type: 'success' | 'info') => void) => {
     localStorage.setItem('lm_user', JSON.stringify(mockUser));
 
     if (isNewUser) {
-      await mailService.sendEmail({
+      // Fire and forget email to avoid blocking the login flow
+      mailService.sendEmail({
         to: mockUser.email,
         type: 'WELCOME',
         data: { name: mockUser.name }
-      });
-      addToast(`Welcome email sent to ${mockUser.email}`, 'info');
+      }).then(() => {
+        addToast(`Welcome email sent to ${mockUser.email}`, 'info');
+      }).catch(console.error);
     }
   };
 
@@ -89,12 +94,14 @@ const useAuth = (addToast: (msg: string, type: 'success' | 'info') => void) => {
   };
 
   const resetPassword = async (email: string) => {
-    await mailService.sendEmail({
+    // Non-blocking email dispatch
+    mailService.sendEmail({
       to: email,
       type: 'PASSWORD_RESET',
       data: { email }
-    });
-    addToast(`Security reset link sent to ${email}`, 'info');
+    }).then(() => {
+      addToast(`Security reset link sent to ${email}`, 'info');
+    }).catch(console.error);
   };
 
   return { user, login, logout, resetPassword };
@@ -158,8 +165,13 @@ const Navbar: React.FC<{ user: User | null; logout: () => void; cartCount: numbe
 
 const ProductCard: React.FC<{ product: Product; onAddToCart: (p: Product) => void }> = ({ product, onAddToCart }) => (
   <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden hover:shadow-md transition-shadow group">
-    <div className="relative aspect-video overflow-hidden">
-      <img src={product.image} alt={product.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
+    <div className="relative aspect-video overflow-hidden bg-slate-100">
+      <img 
+        src={product.image} 
+        alt={product.name} 
+        loading="lazy" 
+        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" 
+      />
       <div className="absolute top-2 right-2">
         <span className={`text-[10px] font-bold uppercase px-2 py-1 rounded-full ${product.category === ProductCategory.SUNGLASSES ? 'bg-orange-100 text-orange-600' : 'bg-blue-100 text-blue-600'}`}>
           {product.category}
@@ -185,7 +197,7 @@ const ProductCard: React.FC<{ product: Product; onAddToCart: (p: Product) => voi
 // --- PAGES ---
 
 const Home = () => (
-  <div className="space-y-16 py-12">
+  <div className="space-y-16 py-12 animate-fade-in">
     <section className="max-w-7xl mx-auto px-4 text-center space-y-8">
       <div className="inline-flex items-center gap-2 bg-blue-50 text-blue-600 px-4 py-2 rounded-full text-sm font-semibold">
         <ShieldCheck className="w-4 h-4" /> Secure & GDPR Compliant
@@ -230,13 +242,12 @@ const Shop = ({ onAddToCart }: { onAddToCart: (p: Product) => void }) => {
   const searchParams = new URLSearchParams(location.search);
   const catFilter = searchParams.get('cat');
 
-  // Filter products based on category from URL params, ensuring type safety with enum comparison
-  const filteredProducts = catFilter 
+  const filteredProducts = useMemo(() => catFilter 
     ? MOCK_PRODUCTS.filter(p => (p.category as string) === catFilter)
-    : MOCK_PRODUCTS;
+    : MOCK_PRODUCTS, [catFilter]);
 
   return (
-    <div className="max-w-7xl mx-auto px-4 py-8 space-y-8">
+    <div className="max-w-7xl mx-auto px-4 py-8 space-y-8 animate-fade-in">
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
         <div>
           <h2 className="text-3xl font-bold text-slate-900">Catalogue</h2>
@@ -277,7 +288,7 @@ const ProductCustomizer = ({ product, addToCart }: { product: Product, addToCart
 
   const isPower = product.category === ProductCategory.POWER_SPECTACLES;
 
-  const calculateTotal = () => {
+  const calculateTotal = useMemo(() => {
     let extra = 0;
     if (isPower) {
       extra += LENS_PRICING.types[lensSelection.type];
@@ -287,19 +298,27 @@ const ProductCustomizer = ({ product, addToCart }: { product: Product, addToCart
       });
     }
     return product.price + extra;
-  };
+  }, [product.price, isPower, lensSelection]);
 
-  const fetchRecommendation = async (pData: any) => {
+  const fetchRecommendation = useCallback(async (pData: any) => {
+    const cacheKey = JSON.stringify(pData);
+    if (recommendationCache[cacheKey]) {
+      setLensRecommendation(recommendationCache[cacheKey]);
+      return;
+    }
+
     setIsRecLoading(true);
     try {
       const rec = await getLensRecommendation(pData);
-      setLensRecommendation(rec || null);
+      const cleanedRec = rec || "Based on your data, standard materials are suitable.";
+      recommendationCache[cacheKey] = cleanedRec;
+      setLensRecommendation(cleanedRec);
     } catch (err) {
       console.error("Recommendation Error:", err);
     } finally {
       setIsRecLoading(false);
     }
-  };
+  }, []);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -311,8 +330,8 @@ const ProductCustomizer = ({ product, addToCart }: { product: Product, addToCart
         try {
           const data = await analyzePrescriptionImage(base64);
           setPrescription(prev => ({ ...prev, ...data }));
-          // Fetch recommendation immediately after AI scan
-          await fetchRecommendation(data);
+          // Fire recommendation fetch in background without blocking UI
+          fetchRecommendation(data);
         } catch (err) {
           console.error("AI Error:", err);
           alert("Could not analyze prescription. Please enter manually.");
@@ -328,7 +347,7 @@ const ProductCustomizer = ({ product, addToCart }: { product: Product, addToCart
     if (step === 1) {
       setStep(2);
       if (!lensRecommendation && !isRecLoading) {
-        await fetchRecommendation(prescription);
+        fetchRecommendation(prescription);
       }
     } else {
       setStep(step + 1);
@@ -338,7 +357,7 @@ const ProductCustomizer = ({ product, addToCart }: { product: Product, addToCart
   const handleFinish = () => {
     addToCart({
       ...product,
-      finalPrice: calculateTotal(),
+      finalPrice: calculateTotal,
       prescription: isPower ? prescription : null,
       lensSelection: isPower ? lensSelection : null,
       customized: true
@@ -348,9 +367,9 @@ const ProductCustomizer = ({ product, addToCart }: { product: Product, addToCart
 
   if (!isPower) {
     return (
-      <div className="max-w-4xl mx-auto py-12 px-4">
+      <div className="max-w-4xl mx-auto py-12 px-4 animate-fade-in">
         <div className="grid md:grid-cols-2 gap-12 bg-white p-8 rounded-3xl border border-slate-200">
-           <img src={product.image} className="rounded-2xl w-full object-cover" />
+           <img src={product.image} className="rounded-2xl w-full object-cover bg-slate-100" />
            <div className="space-y-6">
               <h1 className="text-3xl font-bold">{product.name}</h1>
               <p className="text-slate-600">{product.description}</p>
@@ -368,7 +387,7 @@ const ProductCustomizer = ({ product, addToCart }: { product: Product, addToCart
   }
 
   return (
-    <div className="max-w-4xl mx-auto py-12 px-4 space-y-8">
+    <div className="max-w-4xl mx-auto py-12 px-4 space-y-8 animate-fade-in">
       <div className="flex items-center gap-4 text-slate-400 font-medium overflow-x-auto whitespace-nowrap">
         <span className={step >= 1 ? 'text-blue-600' : ''}>1. Prescription</span>
         <span>→</span>
@@ -415,7 +434,7 @@ const ProductCustomizer = ({ product, addToCart }: { product: Product, addToCart
         )}
 
         {step === 2 && (
-          <div className="space-y-8">
+          <div className="space-y-8 animate-fade-in">
             <div>
               <h3 className="text-lg font-bold mb-4">Select Lens Type</h3>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -442,7 +461,6 @@ const ProductCustomizer = ({ product, addToCart }: { product: Product, addToCart
                 )}
               </div>
 
-              {/* AI RECOMMENDATION BLOCK */}
               {lensRecommendation && (
                 <div className="mb-6 p-4 bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-100 rounded-2xl flex gap-3 shadow-sm animate-fade-in">
                   <div className="p-2 bg-blue-600 rounded-xl text-white h-fit">
@@ -477,12 +495,12 @@ const ProductCustomizer = ({ product, addToCart }: { product: Product, addToCart
         )}
 
         {step === 3 && (
-          <div className="space-y-6">
+          <div className="space-y-6 animate-fade-in">
             <h2 className="text-2xl font-bold">Summary</h2>
             <div className="bg-slate-50 p-6 rounded-2xl space-y-4">
               <div className="flex justify-between border-b pb-2"><span>Frame: {product.name}</span><span>${product.price}</span></div>
               <div className="flex justify-between border-b pb-2"><span>Lens: {lensSelection.type} ({lensSelection.material})</span><span>+${LENS_PRICING.types[lensSelection.type] + LENS_PRICING.materials[lensSelection.material]}</span></div>
-              <div className="flex justify-between text-2xl font-bold text-blue-600 pt-4"><span>Total Price</span><span>${calculateTotal().toFixed(2)}</span></div>
+              <div className="flex justify-between text-2xl font-bold text-blue-600 pt-4"><span>Total Price</span><span>${calculateTotal.toFixed(2)}</span></div>
             </div>
             <div className="flex gap-4">
               <button onClick={() => setStep(2)} className="px-8 py-4 bg-slate-100 rounded-xl font-bold">Back</button>
@@ -496,11 +514,11 @@ const ProductCustomizer = ({ product, addToCart }: { product: Product, addToCart
 };
 
 const CartPage = ({ cart, onRemove }: { cart: any[], onRemove: (i: number) => void }) => {
-  const subtotal = cart.reduce((acc, item) => acc + (item.finalPrice || item.price), 0);
+  const subtotal = useMemo(() => cart.reduce((acc, item) => acc + (item.finalPrice || item.price), 0), [cart]);
   const navigate = useNavigate();
 
   return (
-    <div className="max-w-4xl mx-auto py-12 px-4">
+    <div className="max-w-4xl mx-auto py-12 px-4 animate-fade-in">
       <h1 className="text-3xl font-bold mb-8">Your Cart</h1>
       {cart.length === 0 ? (
         <div className="text-center py-20 bg-white rounded-3xl border-2 border-dashed border-slate-200">
@@ -512,8 +530,8 @@ const CartPage = ({ cart, onRemove }: { cart: any[], onRemove: (i: number) => vo
         <div className="space-y-8">
           <div className="space-y-4">
             {cart.map((item, idx) => (
-              <div key={idx} className="flex items-center gap-6 bg-white p-4 rounded-2xl border border-slate-200">
-                <img src={item.image} className="w-24 h-24 object-cover rounded-xl" />
+              <div key={idx} className="flex items-center gap-6 bg-white p-4 rounded-2xl border border-slate-200 animate-fade-in">
+                <img src={item.image} className="w-24 h-24 object-cover rounded-xl bg-slate-100" />
                 <div className="flex-1">
                   <h3 className="font-bold text-lg">{item.name}</h3>
                   <p className="text-xs text-slate-500">{item.category}</p>
@@ -544,35 +562,31 @@ const CheckoutPage = ({ cart, clearCart, user, addToast }: { cart: any[], clearC
 
   const handlePayment = async () => {
     setLoading(true);
-    // Simulate Razorpay Secure Flow
-    setTimeout(async () => {
+    setTimeout(() => {
       setLoading(false);
       const orderId = `LM-SEC-${Math.floor(10000 + Math.random() * 90000)}`;
       const total = cart.reduce((a, b) => a + (b.finalPrice || b.price), 0).toFixed(2);
       
       addToast(`Payment Success: ${orderId}`, 'success');
       
-      // Dispatch Order Confirmation Email
       if (user) {
-        try {
-          await mailService.sendEmail({
-            to: user.email,
-            type: 'ORDER_CONFIRMATION',
-            data: { orderId, total }
-          });
+        // Background email dispatch
+        mailService.sendEmail({
+          to: user.email,
+          type: 'ORDER_CONFIRMATION',
+          data: { orderId, total }
+        }).then(() => {
           addToast(`Order confirmation sent to ${user.email}`, 'info');
-        } catch (e) {
-          console.error("Mail failure", e);
-        }
+        }).catch(console.error);
       }
 
       clearCart();
       navigate('/');
-    }, 2000);
+    }, 1500); // Reduced delay for faster "feel"
   };
 
   return (
-    <div className="max-w-xl mx-auto py-12 px-4 text-center space-y-8">
+    <div className="max-w-xl mx-auto py-12 px-4 text-center space-y-8 animate-fade-in">
       <div className="p-8 bg-white rounded-3xl border border-slate-200 shadow-xl space-y-6">
         <ShieldCheck className="w-16 h-16 text-green-500 mx-auto" />
         <h2 className="text-2xl font-bold">Secure Payment Gate</h2>
@@ -601,16 +615,15 @@ const Login = ({ login, resetPassword }: { login: (r: UserRole, n?: string, e?: 
 
   const handleSubmit = async () => {
     setIsLoading(true);
-    // Simulate API delay
     setTimeout(async () => {
       await login(UserRole.CUSTOMER, mode === 'signup' ? name : undefined, email);
       setIsLoading(false);
       navigate('/');
-    }, 1200);
+    }, 800); // Reduced simulated latency
   };
 
   return (
-    <div className="max-w-md mx-auto py-20 px-4 space-y-8">
+    <div className="max-w-md mx-auto py-20 px-4 space-y-8 animate-fade-in">
       <div className="text-center">
         <h1 className="text-3xl font-bold">{mode === 'signin' ? 'Welcome Back' : 'Join Lens Master'}</h1>
         <p className="text-slate-500">{mode === 'signin' ? 'Sign in to manage your vision' : 'Secure your optical health today'}</p>
@@ -701,24 +714,20 @@ const Login = ({ login, resetPassword }: { login: (r: UserRole, n?: string, e?: 
 
 const AdminDashboard = ({ addToast }: { addToast: (m: string, t: 'success'|'info') => void }) => {
   const handleUpdateStatus = async (orderId: string, status: string) => {
-    // Simulate updating backend
     addToast(`Order ${orderId} updated to ${status}`, 'success');
     
-    // Send status update email
-    try {
-      await mailService.sendEmail({
-        to: 'john@example.com', // Mocked recipient for demo
-        type: 'STATUS_UPDATE',
-        data: { orderId, status }
-      });
+    // Background email dispatch
+    mailService.sendEmail({
+      to: 'john@example.com',
+      type: 'STATUS_UPDATE',
+      data: { orderId, status }
+    }).then(() => {
       addToast(`Status notification sent to customer`, 'info');
-    } catch (e) {
-      console.error("Mail dispatch error:", e);
-    }
+    }).catch(console.error);
   };
 
   return (
-    <div className="max-w-7xl mx-auto px-4 py-8 space-y-8">
+    <div className="max-w-7xl mx-auto px-4 py-8 space-y-8 animate-fade-in">
        <div className="flex justify-between items-end">
           <div>
             <h1 className="text-3xl font-bold">Admin Console</h1>
@@ -771,7 +780,7 @@ const AdminDashboard = ({ addToast }: { addToast: (m: string, t: 'success'|'info
                     <td className="px-6 py-4 text-slate-600">{o.user}</td>
                     <td className="px-6 py-4">
                       <select 
-                        className="bg-blue-50 text-blue-600 px-3 py-1 rounded-full text-[10px] font-bold uppercase border-none outline-none"
+                        className="bg-blue-50 text-blue-600 px-3 py-1 rounded-full text-[10px] font-bold uppercase border-none outline-none cursor-pointer"
                         defaultValue={o.status}
                         onChange={(e) => handleUpdateStatus(o.id, e.target.value)}
                       >
@@ -797,26 +806,26 @@ const AdminDashboard = ({ addToast }: { addToast: (m: string, t: 'success'|'info
 export default function App() {
   const [toasts, setToasts] = useState<{ id: number, message: string, type: 'success' | 'info' }[]>([]);
   
-  const addToast = (message: string, type: 'success' | 'info') => {
+  const addToast = useCallback((message: string, type: 'success' | 'info') => {
     const id = Date.now();
     setToasts(prev => [...prev, { id, message, type }]);
-  };
+  }, []);
 
-  const removeToast = (id: number) => {
+  const removeToast = useCallback((id: number) => {
     setToasts(prev => prev.filter(t => t.id !== id));
-  };
+  }, []);
 
   const { user, login, logout, resetPassword } = useAuth(addToast);
   const [cart, setCart] = useState<any[]>([]);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
 
-  const addToCart = (item: any) => {
+  const addToCart = useCallback((item: any) => {
     setCart(prev => [...prev, item]);
-  };
+  }, []);
 
-  const removeFromCart = (idx: number) => {
+  const removeFromCart = useCallback((idx: number) => {
     setCart(prev => prev.filter((_, i) => i !== idx));
-  };
+  }, []);
 
   return (
     <Router>
@@ -826,7 +835,7 @@ export default function App() {
         <main className="flex-grow">
           <Routes>
             <Route path="/" element={<Home />} />
-            <Route path="/shop" element={<Shop onAddToCart={(p) => setSelectedProduct(p)} />} />
+            <Route path="/shop" element={<Shop onAddToCart={setSelectedProduct} />} />
             <Route path="/customize" element={selectedProduct ? <ProductCustomizer product={selectedProduct} addToCart={addToCart} /> : <Home />} />
             <Route path="/cart" element={<CartPage cart={cart} onRemove={removeFromCart} />} />
             <Route path="/checkout" element={<CheckoutPage cart={cart} clearCart={() => setCart([])} user={user} addToast={addToast} />} />
@@ -835,21 +844,20 @@ export default function App() {
           </Routes>
         </main>
 
-        {/* TOAST RENDERING */}
         {toasts.map(t => (
           <Toast key={t.id} message={t.message} type={t.type} onClose={() => removeToast(t.id)} />
         ))}
 
         {selectedProduct && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4">
-             <div className="bg-white p-8 rounded-3xl max-w-lg w-full space-y-6">
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4 animate-fade-in">
+             <div className="bg-white p-8 rounded-3xl max-w-lg w-full space-y-6 shadow-2xl">
                 <h3 className="text-2xl font-bold">Configure {selectedProduct.name}</h3>
                 <p className="text-slate-500">This model {selectedProduct.category === ProductCategory.POWER_SPECTACLES ? 'requires prescription details.' : 'is a standard sunglass model.'}</p>
                 <div className="flex gap-4">
-                   <button onClick={() => setSelectedProduct(null)} className="flex-1 py-3 border rounded-xl font-bold">Cancel</button>
+                   <button onClick={() => setSelectedProduct(null)} className="flex-1 py-3 border rounded-xl font-bold hover:bg-slate-50 transition-colors">Cancel</button>
                    <Link 
                      to="/customize" 
-                     className="flex-1 bg-blue-600 text-white py-3 rounded-xl font-bold text-center"
+                     className="flex-1 bg-blue-600 text-white py-3 rounded-xl font-bold text-center hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all"
                     >
                       Continue
                     </Link>
@@ -878,7 +886,7 @@ export default function App() {
             <div>
               <h4 className="font-bold mb-4">Company</h4>
               <ul className="text-sm text-slate-500 space-y-2">
-                <li>Privacy Policy (GDPR)</li>
+                <li>Privacy Policy</li>
                 <li>Shipping & Returns</li>
                 <li>Terms of Service</li>
               </ul>
@@ -888,12 +896,12 @@ export default function App() {
               <div className="flex flex-wrap gap-2">
                 <div className="px-3 py-1 border rounded text-[10px] font-bold uppercase tracking-wider">PCI-DSS</div>
                 <div className="px-3 py-1 border rounded text-[10px] font-bold uppercase tracking-wider">SSL-256</div>
-                <div className="px-3 py-1 border rounded text-[10px] font-bold uppercase tracking-wider">Razorpay Verified</div>
+                <div className="px-3 py-1 border rounded text-[10px] font-bold uppercase tracking-wider">Razorpay</div>
               </div>
             </div>
           </div>
           <div className="max-w-7xl mx-auto px-4 mt-12 pt-8 border-t border-slate-100 text-center text-xs text-slate-400">
-             © 2024 Lens Master Optical Platform. All rights reserved. Built with secure coding standards.
+             © 2024 Lens Master Optical Platform. All rights reserved.
           </div>
         </footer>
       </div>
